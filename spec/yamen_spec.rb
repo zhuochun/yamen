@@ -1,79 +1,126 @@
 require 'spec_helper'
 
+Booking = Struct.new(:pick_up_time, :drop_off_time)
+
 module UserRule
-  class PickUpTime < Yamen::BaseRule
-    # TODO defined in BaseRule, or use ActiveRecord validates
-    # require_config :weekday, :intger, range: 0..6
-    # require_config :startTime, :string, format: /\d{2}:\d{2}/
-    # require_config :endTime, :string, format: /\d{2}:\d{2}/
+  class TimeInRange < Yamen::Rule
+    HOUR_IN_SECONDS = 3600
+    MINUTE_IN_SECONDS = 60
 
-    def initialize(args)
-      @weekday = args.fetch('weekday')
-      @startTime = args.fetch('startTime')
-      @endTime = args.fetch('endTime')
+    parameter :method, Yamen::StringType, enum: [nil, 'pick_up_time', 'drop_off_time']
+    parameter :weekday, Yamen::StringType, enum: Date::DAYNAMES
+    parameter :start_time, Yamen::StringType, from: :startTime, validate: ->(p) { p =~ /\d{2}:\d{2}/ }
+    parameter :end_time, Yamen::StringType, from: :endTime, validate: ->(p) { p =~ /\d{2}:\d{2}/ }
+
+    def decision(facts)
+      unless facts.respond_to?(method)
+        return [false, "does not respond_to? #{method}"]
+      end
+
+      time = facts.send(method)
+
+      unless Date::DAYNAMES[time.wday] == weekday
+        return [false, "#{time} is not a #{weekday}"]
+      end
+
+      unless time_in_range?(time)
+        return [false, "#{time} is not between #{start_time} - #{end_time}"]
+      end
+
+      return [true, nil]
     end
 
-    def eval(facts)
-      facts[:booking].pick_up_time.wday == @weekday
-    end
-  end
+    private
 
-  class PickUpLocation < Yamen::BaseRule
-    def initialize(args)
-      @polygon = args.fetch('polygon') # TODO convert polygon
+    def time_in_range?(time)
+      (time_in_seconds(start_time)..time_in_seconds(end_time)).cover?(
+        seconds_from_midnight(time.hour, time.minute, time.second))
     end
 
-    def eval(facts)
-      @polygon.cover?(facts[:booking].pick_up_latitude, facts[:booking].pick_up_longitude)
+    def time_in_seconds(time)
+      hour, minutes = time.split(':').map(&:to_i)
+      seconds_from_midnight(hour, minutes)
+    end
+
+    def seconds_from_midnight(hour, minutes, seconds = 0)
+      hour * HOUR_IN_SECONDS + minutes * MINUTE_IN_SECONDS + seconds
     end
   end
 end
 
-describe Yamen do
-  describe Yamen::Governor do
-    it 'return all the rules' do
-      governor = Yamen::Governor.new(Yamen::BooleanRule, UserRule)
-      expect(governor.junction_rules).to match_array([:And, :Or])
-      expect(governor.user_rules).to match_array([:PickUpTime, :PickUpLocation])
-    end
+describe Yamen::BooleanGovernor do
+  let(:governor) { Yamen::BooleanGovernor.new(UserRule) }
 
-    it 'return all the rules in details' do
-      # TODO pending implement
-    end
+  it 'return all the rules' do
+    expect(governor.core_rules.keys).to match_array(['And', 'Or'])
+    expect(governor.user_rules.keys).to match_array(['TimeInRange'])
   end
 
-  describe Yamen::Parser do
-    it 'parse and correctly' do
-      parser = Yamen::Parser.new(Yamen::BooleanRule, TrueClass)
-      root = parser.read({ 'type' => 'And', 'args' => [] })
-      expect(root).to be_an_instance_of(Yamen::BooleanRule::And)
-      expect(root.eval('anything')).to be(true)
+  it 'return all the rules in details' do
+    # TODO pending implement
+  end
+
+  context 'An OR[TimeInRange, TimeInRange] rule' do
+    before do
+      governor.read <<-RULES
+        {
+          "rule": "Or",
+          "params": {
+            "conditions": [
+              {
+                "rule": "TimeInRange",
+                "params": {
+                  "method": "pick_up_time",
+                  "weekday": "Monday",
+                  "startTime": "08:00",
+                  "endTime": "10:00"
+                }
+              },
+              {
+                "rule": "TimeInRange",
+                "params": {
+                  "method": "pick_up_time",
+                  "weekday": "Monday",
+                  "startTime": "17:30",
+                  "endTime": "21:00"
+                }
+              }
+            ]
+          }
+        }
+      RULES
     end
 
-    it 'parse or correctly' do
-      parser = Yamen::Parser.new(Yamen::BooleanRule, TrueClass)
-      root = parser.read({ 'type' => 'Or', 'args' => [] })
-      expect(root).to be_an_instance_of(Yamen::BooleanRule::Or)
-      expect(root.eval('anything')).to be(false)
+    it 'has authorized_rule' do
+      expect(governor.authorized_rule).not_to be_nil
+      expect(governor.authorized_rule).to be_an_instance_of(Yamen::Rules::Boolean::Or)
     end
 
-    it 'parse or + pickUpTime correctly' do
-      parser = Yamen::Parser.new(Yamen::BooleanRule, UserRule)
-      root = parser.read({
-        'type' => 'Or', 'args' => [
-          { 'type' => 'PickUpTime', 'args' => { 'weekday' => 1, 'startTime' => 0, 'endTime' => 24 } },
-          { 'type' => 'PickUpTime', 'args' => { 'weekday' => 2, 'startTime' => 0, 'endTime' => 24 } }
-        ]
-      })
-      expect(root).to be_an_instance_of(Yamen::BooleanRule::Or)
+    it 'returns false when pick_up_time is not on Monday' do
+      booking = Booking.new(DateTime.parse('2015-10-09 11:00 +0800'),
+                            DateTime.parse('2015-10-09 11:50 +0800'))
 
-      Booking = Struct.new(:pick_up_time)
+      decision = governor.decision(booking)
 
-      facts = { booking: Booking.new(Time.parse('2015-09-24 02:49:53 +0800')) }
-      expect(root.eval(facts)).to be(false)
+      expect(decision[0]).to be(false)
+    end
 
-      facts = { booking: Booking.new(Time.parse('2015-09-21 02:49:53 +0800')) }
-      expect(root.eval(facts)).to be(true)
+    it 'returns true when pick_up_time is on Monday morning' do
+      booking = Booking.new(DateTime.parse('2015-10-19 08:30 +0800'),
+                            DateTime.parse('2015-10-19 08:50 +0800'))
+
+      decision = governor.decision(booking)
+
+      expect(decision[0]).to be(true)
+    end
+
+    it 'returns true when pick_up_time is on Monday morning' do
+      booking = Booking.new(DateTime.parse('2015-10-05 18:30 +0800'),
+                            DateTime.parse('2015-10-05 18:35 +0800'))
+
+      decision = governor.decision(booking)
+
+      expect(decision[0]).to be(true)
     end
   end
 end
