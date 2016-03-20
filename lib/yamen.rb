@@ -7,8 +7,10 @@ require 'yamen/rules/boolean'
 
 module Yamen
   class Governor
-    attr_reader :core_rules, :user_rules, :authorized_rule
+    attr_reader :core_rules, :user_rules, :rule_definition
 
+    # Rules are expected to be defined in set of modules and implements Yamen::Rule.
+    # Besides, rules should have different names across modules.
     def initialize(core_rule_modules, user_rule_modules)
       @core_rules = {}
       Array(core_rule_modules).each do |rule_module|
@@ -22,17 +24,17 @@ module Yamen
     end
 
     def read(json_or_hash)
-      hash = if json_or_hash.is_a? String
+      hash = if json_or_hash.is_a?(String)
                JSON.parse(json_or_hash)
              else
                json_or_hash
              end
 
-      @authorized_rule = parser.read(hash)
+      @rule_definition = parser.read(hash)
     end
 
     def decision(facts)
-      @authorized_rule.decision(facts)
+      @rule_definition.decision(facts)
     end
 
     private
@@ -52,8 +54,8 @@ module Yamen
   end
 
   class BooleanGovernor < Governor
-    def initialize(rule_modules)
-      super(Yamen::Rules::Boolean, rule_modules)
+    def initialize(user_rule_modules)
+      super(Yamen::Rules::Boolean, user_rule_modules)
     end
   end
 end

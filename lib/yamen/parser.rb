@@ -5,7 +5,7 @@ module Yamen
       @user_rules = user_rules
     end
 
-    # Read in a JSON definition, and return a Rule object
+    # Read in a JSON/Hash definition in format, and return a Rule object
     #
     #     {
     #       "rule": "And",
